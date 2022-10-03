@@ -1,0 +1,79 @@
+---
+- name$: 'Bastion host | Provision Amadla Image'
+  hosts: all
+  any_errors_fatal: true # stop if anything is wrong
+  gather_facts: true
+  become: true # Means become `root` if set with true
+  become_user: root
+  become_method: sudo
+  vars:
+    user_username: "{{ lookup('env','USER_USERNAME') }}"
+    user_server_password: "{{ lookup('env','USER_SERVER_PASSWORD') }}"
+    failtoban_version: "debian/0.10.2-2"
+  tasks:
+
+    - name: Put SELinux in permissive mode, logging actions that would be blocked.
+      ansible.posix.selinux:
+        policy: targeted
+        state: permissive
+
+    - name: Ensure the ~/.ssh directory exists
+      file: path=/home/{{ user_username }}/.ssh state=directory
+
+    - name: Copy known hosts file for bastion connection
+      copy: src=config/known_hosts dest="/home/{{ user_username }}/.ssh/known_hosts" mode=0600
+
+    - name: Copy the SSH config file
+      copy: src=config/.ssh/config dest="/home/{{ user_username }}/.ssh/config"
+    
+    # == `apt update`
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Installing packages
+      apt:
+        pkg:
+        - git
+        state: latest
+
+    # After updating and installing new packages you might have packages that are not useful anymore
+    # this will remove them
+    - name: Remove useless packages from the cache
+      apt:
+        autoclean: yes
+
+    - name: Git clone Fail2Ban
+      shell: "git clone https://github.com/fail2ban/fail2ban /opt/fail2ban"
+      args:
+        executable: /bin/bash
+
+    - name: Change the branch of Fail2Ban
+      shell: "$(cd /opt/fail2ban/ && git checkout -q --no-track {{ failtoban_version }})"
+      args:
+        executable: /bin/bash
+    
+    - name: Install Fail2Ban
+      shell: "$(cd /opt/fail2ban/ && python setup.py install)"
+      args:
+        executable: /bin/bash
+
+    #
+    # Adding the configurations
+    #
+
+    # @NOTE: Systemd: https://github.com/fail2ban/fail2ban/blob/debian/0.10.2-2/files/fail2ban.service.in
+
+    - name: Copy jail.local
+      copy: src=config/jail.local dest="/etc/fail2ban/jail.local" mode=0644
+
+    # @NOTE: You need to reboot for SELinux enabling to take affect
+    - name: Activate SELinux
+      shell: selinux-activate
+      args:
+        executable: /bin/bash
+
+    - name: Enable SELinux
+      ansible.posix.selinux:
+        policy: targeted
+        state: enforcing
